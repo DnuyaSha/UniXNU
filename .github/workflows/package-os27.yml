@@ -51,25 +51,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Exact device state of the proven successful run (stoicneko run 43165994739,
-          # branch build/ipados27-pinned). Today's UniXNU-sheng main adds driver
-          # submodules (QcaBluetooth, QcomDwc3, newer ShengUfs) that the 82b847c4
-          # fileset reference build cannot absorb (run 43181788872: RELEASE reference
-          # exit 2 after removing 67 forced exports). The platform seed stays ours.
-          repository: stoicneko/UniXNU-sheng
-          ref: a5423588fda87df9de0094e1d6c5e9fd3bbe5269
+          # Exact combo of the proven BOOTABLE run (niuzicheng666 run 43024978579).
+          # This device state replaces the stock sheng-abl-dtb.py output (dtc without
+          # -@, no /__symbols__) with the vendor_boot base tree (babylon.dtb, 1538
+          # __symbols__ labels). Without it ABL's dtbo_a overlay application fails
+          # ("reserved-memory node not found"), ABL draws its unlock logo and returns
+          # to fastboot without ever jumping -- our device logfs evidence matches the
+          # notes in their scripts/fetch-babylon-abldtb.py exactly.
+          repository: niuzicheng666-source/UniXNU-sheng
+          ref: b87a4cb89377914fdb0e11482a3e9221491db817
           path: device
           submodules: recursive
       - uses: actions/checkout@v4
         with:
-          repository: UniXNU/UniXNU
-          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          repository: niuzicheng666-source/UniXNU
+          ref: dfb3978eb92da8c1c9e5420a40b476a8d281d221 # proven combo: 82b847c4 + full 17-patch Mesa series
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
         with:
-          repository: UniXNU/uefi-sheng
-          ref: 66421cb7bb5694843aec8de1ca3d1de4c20cca38 # pinned: uefi-sheng main, unchanged since 2026-11-01
+          repository: niuzicheng666-source/uefi-sheng
+          ref: b77f776f75c65746f2f4810978756535e0c1a42a # proven combo: sheng branch at run 43024978579 (babylonPkg)
           path: uefi-sheng
           submodules: recursive
       - name: repair Mesa patch header

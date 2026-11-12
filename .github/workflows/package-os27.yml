@@ -74,6 +74,26 @@ jobs:
           ref: b77f776f75c65746f2f4810978756535e0c1a42a # proven combo: sheng branch at run 43024978579 (babylonPkg)
           path: uefi-sheng
           submodules: recursive
+      - name: patch abldtb msm-id selection (0x218 handset)
+        # fetch-babylon-abldtb.py hardcodes EXPECTED_MSM_ID = (0x207, 0x20000) -- the
+        # chiptype of the author's handset. This handset reports Chiptype 536 (0x218)
+        # in the ABL log and rejects the 0x207 tree with "No match found for Soc Dtb
+        # type". The vendor_boot tree carries both variants; select ours.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          path = pathlib.Path('device/scripts/fetch-babylon-abldtb.py')
+          text = path.read_text()
+          old = 'EXPECTED_MSM_ID = (0x207, 0x20000)'
+          new = 'EXPECTED_MSM_ID = (0x218, 0x20000)  # this handset: ABL "Chiptype: 536"'
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+              print('msm-id selection patched to 0x218')
+          elif new.split('  #')[0] in text:
+              print('already patched')
+          else:
+              raise SystemExit('EXPECTED_MSM_ID line not found')
+          PY
       - name: repair Mesa patch header
         # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
         # line, so git apply stops at dev/null. UniXNU e7c359c adds exactly that line; add it here for the pinned revision.

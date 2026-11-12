@@ -51,8 +51,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: DnuyaSha/UniXNU-sheng
-          ref: main
+          # Exact device state of the proven successful run (stoicneko run 43165994739,
+          # branch build/ipados27-pinned). Today's UniXNU-sheng main adds driver
+          # submodules (QcaBluetooth, QcomDwc3, newer ShengUfs) that the 82b847c4
+          # fileset reference build cannot absorb (run 43181788872: RELEASE reference
+          # exit 2 after removing 67 forced exports). The platform seed stays ours.
+          repository: stoicneko/UniXNU-sheng
+          ref: a5423588fda87df9de0094e1d6c5e9fd3bbe5269
           path: device
           submodules: recursive
       - uses: actions/checkout@v4

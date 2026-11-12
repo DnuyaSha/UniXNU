@@ -1,0 +1,211 @@
+# Build the userdata root image (userdata-root.img) for sheng OS27 (ipados-27.0.1-24A446).
+#
+# Derived from the official macOS build workflow (UniXNU/UniXNU .github/workflows/macos.yml@82b847c4)
+# with exactly one intent change: this variant exists to hand the userdata image to the device
+# owner, so it uploads userdata-root.json + the compressed userdata-root.img as artifacts.
+# The device packaging policy (docs/porting/packaging) applies: the artifacts are one device's
+# images; download them and delete the run afterwards (gh run delete).
+#
+# Why this runs on a macOS runner and not a local PC: the userdata doc (guide/userdata) is
+# explicit — "AEA 加密的镜像（如 iOS 与 iPadOS 27）需要 macOS 的 aea 和 ipsw 工具" and the
+# build decrypts AEA images on macOS and reads the disk images with hdiutil. The Linux path
+# (scripts/unixnu/udif.py + lzfse) covers reading only, not AEA decryption.
+#
+# Inputs are the proven combination of run 43189906016 (OS27 packaging success):
+# UniXNU@82b847c4 + device source stoicneko/UniXNU-sheng@a5423588.
+
+name: userdata-os27
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_repository:
+        description: Device repository as owner/name
+        required: true
+        default: stoicneko/UniXNU-sheng
+      device_ref:
+        description: Device repository ref
+        required: true
+        default: a5423588fda87df9de0094e1d6c5e9fd3bbe5269
+      defconfig:
+        description: Defconfig name (configs/ of the device repository)
+        required: true
+        default: sheng_ipados27_defconfig
+      xcode:
+        description: Xcode version of the macos-26 image (/Applications/Xcode_<version>.app)
+        required: true
+        default: "26.6"
+      ipsw_url:
+        description: IPSW URL (empty uses the OS profile default)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: userdata-os27-${{ github.ref }}-${{ inputs.device_repository }}-${{ inputs.device_ref }}-${{ inputs.defconfig }}
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+      UNIXNU_DEVICE: ${{ github.workspace }}/device
+      UNIXNU_IPSW: ${{ inputs.ipsw_url }}
+      DEFCONFIG: ${{ inputs.defconfig }}
+    steps:
+      - name: Check out UniXNU
+        uses: actions/checkout@v4
+        with:
+          # The proven framework baseline of run 43189906016; scripts/unixnu (ipsw.py,
+          # udif.py, the userdata recipe) are taken from this checkout.
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9
+          persist-credentials: false
+
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.device_repository }}
+          ref: ${{ inputs.device_ref }}
+          path: device
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check the inputs
+        id: check
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -f device/board.toml ] || fail "the device repository has no board.toml"
+          [ -f "device/configs/$DEFCONFIG" ] || fail "device/configs/$DEFCONFIG not found: $(cd device/configs 2>/dev/null && printf '%s ' *_defconfig)"
+          [ -d "$DEVELOPER_DIR" ] || fail "Xcode not found at $DEVELOPER_DIR; installed: $(printf '%s ' /Applications/Xcode_*.app)"
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'scripts')
+          from unixnu.cli import parser, cmd_defconfig
+          from unixnu.config import Context
+          ctx = Context(parser().parse_args(['defconfig', os.environ['DEFCONFIG']]))
+          cmd_defconfig(ctx)
+          board = ctx.board
+          name = board.get('board', {}).get('name')
+          if not name:
+              sys.exit('::error::board.toml needs [board] name')
+          ud = board.get('userdata', {})
+          for key in ('first_lba', 'last_lba', 'lba_bytes'):
+              if key not in ud:
+                  sys.exit(f'::error::board.toml [userdata] needs {key}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'board={name}\n')
+              out.write(f'work={ctx.work}\n')
+          PY
+
+      - name: Install host tools
+        run: |
+          # userdata needs: aea + ipsw (AEA decryption of the iOS/iPadOS 27 disk images),
+          # hdiutil/compression_tool (built into macOS), mtools/dtc for the other steps.
+          brew install dtc mtools zstd blacktop/tap/ipsw
+          {
+            echo "/opt/homebrew/opt/llvm/bin"
+          } >> "$GITHUB_PATH"
+          # Fail fast, naming the tool, before the long download.
+          ok=1
+          for t in aea ipsw hdiutil compression_tool zstd python3 git; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version | head -n 2
+          python3 --version
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Build userdata (dry run)
+        id: dryrun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Checks partition capacity, window layout and input hashes without writing the image.
+          ./unixnu build userdata --dry-run
+
+      - name: Build userdata
+        id: userdata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ./unixnu build userdata
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Compress, split and checksum
+        id: pack
+        env:
+          WORK: ${{ steps.check.outputs.work }}
+        run: |
+          set -euo pipefail
+          ud="$WORK/userdata"
+          ls -la "$ud"
+          test -f "$ud/userdata-root.img"
+          test -f "$ud/userdata-root.json"
+          # Raw image is ~16 GiB of disk images with zero-filled slack: zstd crushes it and is
+          # fast. Split to 1900 MiB parts so every artifact piece stays well under limits.
+          zstd -3 -T0 "$ud/userdata-root.img" -o "$RUNNER_TEMP/userdata-root.img.zst" --rm
+          cd "$RUNNER_TEMP"
+          split -b 1900m userdata-root.img.zst userdata-root.img.zst.part-
+          cp "$ud/userdata-root.json" .
+          rm -f userdata-root.img.zst
+          sha256sum userdata-root.json userdata-root.img.zst.part-* > SHA256SUMS
+          cat SHA256SUMS
+          echo "=== window report (userdata-root.json) ==="
+          cat userdata-root.json
+
+      - name: Upload the userdata image
+        uses: actions/upload-artifact@v4
+        with:
+          name: userdata-root-27
+          path: |
+            ${{ runner.temp }}/userdata-root.json
+            ${{ runner.temp }}/userdata-root.img.zst.part-*
+            ${{ runner.temp }}/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        env:
+          BOARD: ${{ steps.check.outputs.board }}
+          USERDATA: ${{ steps.userdata.outcome }}
+          DRYRUN: ${{ steps.dryrun.outcome }}
+        run: |
+          {
+            echo "## userdata build: ${BOARD:-unknown} (${DEFCONFIG})"
+            echo
+            echo "| Step | Result |"
+            echo "| --- | --- |"
+            echo "| dry-run | ${DRYRUN:-skipped} |"
+            echo "| userdata | ${USERDATA:-skipped} |"
+            echo
+            echo "Artifacts carry userdata-root.img (zstd, split parts) + userdata-root.json."
+            echo "Download, then delete this run (gh run delete) per the device packaging policy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove proprietary inputs
+        if: always()
+        run: |
+          rm -rf out/ipsw out/feeds device/.cache/firmware out/*/tree/.cache/firmware out/*/*/*/tree/.cache/firmware
+          rm -f "$RUNNER_TEMP/userdata-root.img.zst" "$RUNNER_TEMP"/userdata-root.img.zst.part-* "$RUNNER_TEMP/userdata-root.json" "$RUNNER_TEMP/SHA256SUMS"

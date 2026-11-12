@@ -1,10 +1,10 @@
 name: package
 
 # Upstream-sync packaging: official device repo main (UniXNU/UniXNU-sheng) + the
-# ci-newest framework baseline (Soneoylys/UniXNU-fork@00db0e02 = official 8ec13bb6
-# + Mesa patch header + XnuPrelink pin), plus the sheng ABL device-tree fix
-# (vendor_boot 0x218 base tree with __symbols__) the stock sheng-abl-dtb.py lacks.
-# uefi-sheng stays at official main 66421cb7.
+# official framework pin UniXNU/UniXNU@82b847c4 (what the device main's own package.yml
+# still pins; ci-newest 8ec13bb6 does NOT link against device main -- unbound native_*
+# symbols), plus the sheng ABL device-tree fix (vendor_boot 0x218 base tree with
+# __symbols__) the stock sheng-abl-dtb.py lacks. uefi-sheng stays at 66421cb7.
 #
 # The platform seed comes from the repository secret UNIXNU_UNIQUE_CHIP_ID and
 # is baked into the images, so the run's artifacts belong to one device alone:
@@ -53,8 +53,8 @@ jobs:
           submodules: recursive
       - uses: actions/checkout@v4
         with:
-          repository: Soneoylys/UniXNU-fork
-          ref: 00db0e02b1a8d571e589b9cf74785c2c36643790 # ci-newest: 8ec13bb6 + Mesa patch header + XnuPrelink pin
+          repository: UniXNU/UniXNU
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -63,12 +63,31 @@ jobs:
           ref: 66421cb7bb5694843aec8de1ca3d1de4c20cca38 # pinned: uefi-sheng main, unchanged since 2026-11-01
           path: uefi-sheng
           submodules: recursive
+      - name: repair Mesa patch header
+        # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
+        # line, so git apply stops at dev/null. UniXNU e7c359c adds exactly that line; add it here for the pinned revision.
+        working-directory: UniXNU
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          path = pathlib.Path('patches/mesa/turnip-frame-diagnostics.patch')
+          head = 'diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h\n--- /dev/null\n'
+          text = path.read_text()
+          if text.startswith(head):
+              path.write_text(text.replace(head, head.replace('\n--- ', '\nnew file mode 100644\n--- ', 1), 1))
+              print('added the new file mode line')
+          elif 'new file mode 100644' in text.splitlines()[1]:
+              print('already has the new file mode line')
+          else:
+              raise SystemExit('unexpected header of ' + str(path))
+          PY
       - name: sheng ABL device tree (0x218 symbols)
-        # Official main's sheng-abl-dtb.py adds splash_region via fdtput; the result carries no /__symbols__
-        # (dtc without -@), so ABL's dtbo_a overlay fixups all fail and it returns to fastboot (the black
-        # screen we proved on the real device). Mirror niuzicheng666's fetch-babylon-abldtb.py: copy the
-        # vendor_boot base tree that carries __symbols__, select msm-id 0x218 (this handset ABL "Chiptype:
-        # 536"), and overwrite build/sheng/sheng.dtb, then add the step to board.toml preflight.
+        # Official main's sheng-abl-dtb.py adds splash_region via fdtput; the result carries no
+        # /__symbols__ (dtc without -@), so ABL's dtbo_a overlay fixups all fail and it returns to
+        # fastboot (the black screen we proved on the real device). Mirror niuzicheng666's
+        # fetch-babylon-abldtb.py: copy the vendor_boot base tree that carries __symbols__, select
+        # msm-id 0x218 (this handset ABL "Chiptype: 536"), overwrite build/sheng/sheng.dtb, then add
+        # the step to board.toml preflight.
         run: |
           curl -fsSL -o device/scripts/fetch-sheng-abldtb.py \
             "https://raw.githubusercontent.com/niuzicheng666-source/UniXNU-sheng/b87a4cb89377914fdb0e11482a3e9221491db817/scripts/fetch-babylon-abldtb.py"

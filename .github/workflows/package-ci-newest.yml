@@ -47,8 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: UniXNU/UniXNU-sheng
-          ref: main
+          repository: stoicneko/UniXNU-sheng
+          ref: a5423588fda87df9de0094e1d6c5e9fd3bbe5269 # proven device source (run 43189906016)
           path: device
           submodules: recursive
       - uses: actions/checkout@v4
